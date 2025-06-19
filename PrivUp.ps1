@@ -99,7 +99,6 @@ function Check_Services {
             if ($mode -match 'Auto' -and $canShutdown) {
                 Write-Host "        [+] Can restart machine to exploit service $name" -ForegroundColor Cyan
             } else {
-                #$startCheck = try { net start "$name" 2>&1 } catch { $_.ToString() }
                 $startCheck = sc.exe continue $name
                 if ($startCheck -contains "Access is denied") {
                     Write-Host "        [+] Can restart service '$name' manually" -ForegroundColor Cyan
@@ -167,8 +166,7 @@ function Check_Processes{
                 $integrity = (Get-Process -Id $pid1 -ErrorAction Stop).Path |
                     ForEach-Object { (Get-Acl $_).Owner }
             } catch {}
-
-            # Reuse your Check-Perms function
+            
             $canWriteExe = Check-Perms $exePath
             $canWriteDir = Check-Perms $exeDir
             if ($canWriteExe -or $canWriteDir) {
@@ -295,7 +293,6 @@ function Check_Passwords {
     Write-Host "    [+] Looking for Powershell History" -ForegroundColor Yellow
     $users = Get-ChildItem -Path 'C:\Users' -Directory -ErrorAction SilentlyContinue
     foreach ($user in $users) {
-        # Define path to PowerShell history file for this user
         $psReadlineDir = Join-Path -Path $user.FullName -ChildPath 'AppData\Roaming\Microsoft\Windows\PowerShell\PSReadline'
 
         if (Test-Path $psReadlineDir -ErrorAction SilentlyContinue) {
@@ -325,10 +322,6 @@ function Check_Scheduled{
         $runAsUser  = $task.Principal.UserId
         
         if ($runAsUser -match "$CurrentUser") {continue}
-        
-        # Get the 'Task To Run' command (primary action)
-
-        # Parse EXE path
         $exePath = if ($fullCommand -match '^"([^"]+)"') {
             $matches[1]
         } elseif ($fullCommand -match '^(.*?\.exe)') {
@@ -343,12 +336,10 @@ function Check_Scheduled{
         $exeDir = Split-Path $exePath -Parent
         $writeable = Check-Perms $exePath
         $dirWrite  = Check-Perms $exeDir
-        # Check for unquoted path with spaces
         $hasSpaces = $exePath -match '\s'
         $isQuoted = $fullCommand.Trim().StartsWith('"') -and $fullCommand.Trim().EndsWith('"')
         $unquotedWithSpaces = $hasSpaces -and -not $isQuoted
 
-        # Output findings
         if ($writeable -or $dirWrite -or $unquotedWithSpaces) {
             $hijackablePaths = Test-Unquoted -exePath $exePath
             if ($unquotedWithSpaces -and (-not $hijackablePaths)){continue}
