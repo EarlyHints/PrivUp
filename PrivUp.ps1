@@ -123,9 +123,11 @@ function Check_Installed{
         foreach ($app in $software) {
             $displayName = $app.DisplayName
             $installPath = $app.InstallLocation.TrimEnd('\')
-            if (-Not (Test-Path -Path $installPath)) {
-                continue
-            }
+            try {
+                if (-Not (Test-Path -Path $installPath -ErrorAction Stop)) {
+                    continue
+                }
+            } catch {continue}
             $writeable = Check-Perms $installPath
             if ($writeable) {
                 Write-Host "[!] Potential DLL hijack vector detected:" -ForegroundColor Red
@@ -254,14 +256,14 @@ function Check_Passwords {
     foreach ($path in $commonUnattendPaths) {
     if (Test-Path $path) {
             Get-ChildItem -Path $path -Filter unattend.xml -ErrorAction SilentlyContinue -Force | ForEach-Object {
-                Write-Host "        [!] Found unattend.xml at: $($file.FullName)" -ForegroundColor Red
+                Write-Host "        [!] Found unattend.xml at: $path" -ForegroundColor Red
                 try {
-                    [xml]$xml = Get-Content $file.FullName
+                    [xml]$xml = Get-Content $path -ErrorAction Stop
                     $xml.SelectNodes("//*[contains(local-name(), 'password')]") | ForEach-Object {
                         Write-Host "        [+] Password Field: $($_.OuterXml)" -ForegroundColor Red
                     }
                 } catch {
-                    Write-Host "        [!] Failed to parse XML in: $($file.FullName)" -ForegroundColor Magenta
+                    Write-Host "        [!] Failed to parse XML in: $path" -ForegroundColor Magenta
                 }
             }
         }
