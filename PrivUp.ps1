@@ -256,14 +256,15 @@ function Check_Passwords {
     foreach ($path in $commonUnattendPaths) {
     if (Test-Path $path) {
             Get-ChildItem -Path $path -Filter unattend.xml -ErrorAction SilentlyContinue -Force | ForEach-Object {
-                Write-Host "        [!] Found unattend.xml at: $path" -ForegroundColor Red
+                $fullPath = Join-Path -Path $path -ChildPath "unattend.xml"
+                Write-Host "        [!] Found unattend.xml at: $fullPath" -ForegroundColor Red
                 try {
-                    [xml]$xml = Get-Content $path -ErrorAction Stop
+                    [xml]$xml = Get-Content $fullPath -ErrorAction Stop
                     $xml.SelectNodes("//*[contains(local-name(), 'password')]") | ForEach-Object {
                         Write-Host "        [+] Password Field: $($_.OuterXml)" -ForegroundColor Red
                     }
                 } catch {
-                    Write-Host "        [!] Failed to parse XML in: $path" -ForegroundColor Magenta
+                    Write-Host "        [!] Failed to parse XML in: $fullPath" -ForegroundColor Magenta
                 }
             }
         }
@@ -320,9 +321,13 @@ function Check_Scheduled{
 
     foreach ($task in $tasks) {
         $taskName   = $task.TaskName
+        $taskPath = $task.TaskPath
         $fullCommand   = $task.Actions[0].Execute
         $runAsUser  = $task.Principal.UserId
-        
+        $logonType = $task.Principal.LogonType
+        if ($logonType -eq "Password") {
+            Write-Host "    [!] Task uses STORED credentials: $taskPath$taskName" -ForegroundColor Red
+        }
         if ($runAsUser -match "$CurrentUser") {continue}
         $exePath = if ($fullCommand -match '^"([^"]+)"') {
             $matches[1]
@@ -402,6 +407,72 @@ function Check_Startup {
     }
 }
 
+function Check_misc {
+    Write-Host "`n[+] Checking Some random stuf..." -ForegroundColor Yellow
+    $hkcu = Get-ItemProperty -Path "HKCU:\Software\Policies\Microsoft\Windows\Installer" -ErrorAction SilentlyContinue
+    $hklm = Get-ItemProperty -Path "HKLM:\Software\Policies\Microsoft\Windows\Installer" -ErrorAction SilentlyContinue
+
+    $hkcuValue = $hkcu.AlwaysInstallElevated
+    $hklmValue = $hklm.AlwaysInstallElevated
+
+    if ($hkcuValue -eq 1 -and $hklmValue -eq 1) {
+        Write-Host "    [!] AlwaysInstallElevated is ENABLED in both HKCU and HKLM!" -ForegroundColor Red
+        Write-Host "    [+]You may be able to escalate privileges by installing an MSI as SYSTEM." -ForegroundColor Red
+    } 
+
+    $hivePaths = @(
+        "$env:SystemRoot\System32\config\SAM",
+        "$env:SystemRoot\System32\config\SYSTEM",
+        "$env:SystemRoot\System32\config\SECURITY"
+    )
+    foreach ($hive in $hivePaths) {
+        try {
+            $stream = [System.IO.File]::Open($hive, 'Open', 'Read', 'None')
+            if ($stream) {
+                Write-Host "    [!] Hive readable: $hive" -ForegroundColor Red
+                $stream.Close()
+            }
+        } catch {}
+        
+    }
+    $tempPath = "$env:TEMP\reg_dumps"
+    New-Item -Path $tempPath -ItemType Directory -Force | Out-Null
+
+    $hives = @{
+        "HKLM\SAM"      = "$tempPath\SAM.save"
+        "HKLM\SYSTEM"   = "$tempPath\SYSTEM.save"
+        "HKLM\SECURITY" = "$tempPath\SECURITY.save"
+    }
+
+    foreach ($hive in $hives.Keys) {
+        $outputFile = $hives[$hive]
+        try {
+            $result = reg save $hive $outputFile /y 2>&1
+            if (Test-Path $outputFile) {
+                Write-Host "    [!] SUCCESS: Able to save $hive to $outputFile" -ForegroundColor Red
+            } 
+        } catch {}
+    }
+    $services = Get-WmiObject -Class Win32_Service
+    foreach ($service in $services) {
+        $serviceName = $service.Name
+        $displayName = $service.DisplayName
+
+        try {
+            $sd = Get-Acl -Path ("HKLM:\SYSTEM\CurrentControlSet\Services\" + $serviceName)
+            foreach ($entry in $sd.Access) {
+                if ($entry.IdentityReference -match "$env:USERNAME") {
+                    Write-Host "    [!] You can modify service: $displayName ($serviceName)" -ForegroundColor Red
+                    Write-Host "    User            : $($entry.IdentityReference)"
+                    Write-Host "    RegistryRights  : $($entry.RegistryRights)"
+                    Write-Host "    AccessControl   : $($entry.AccessControlType)"
+                }
+            }
+        } catch {}
+    }
+
+}
+
 Check_Path
 Check_Services
 Check_Installed
@@ -410,3 +481,4 @@ Check_Processes
 Check_Passwords
 Check_Scheduled
 Check_Startup
+Check_misc

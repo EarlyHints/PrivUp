@@ -16,3 +16,4 @@ A Windows priv esc finder
 6) Checks for passwords in default locations (does not search filesystem)
 7) Checks if you can write to services and checks for unquooted services
 8) Checks startup apps 
+9) Check for install elevated, sam/system hive access and modifiable services
