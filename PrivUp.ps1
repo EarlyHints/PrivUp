@@ -113,23 +113,28 @@ function Check_Services {
 
 function Check_Installed{
     Write-Host "`n[+] Checking installed software for DLL hijacking possibilities..." -ForegroundColor Yellow
-
-    $software = Get-ItemProperty -Path "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue | 
-        Select-Object DisplayName, InstallLocation | 
-        Where-Object { $_.DisplayName -and $_.InstallLocation }
-    foreach ($app in $software) {
-        $displayName = $app.DisplayName
-        $installPath = $app.InstallLocation.TrimEnd('\')
-        if (-Not (Test-Path -Path $installPath)) {
-            continue
-        }
-        $writeable = Check-Perms $installPath
-        if ($writeable) {
-            Write-Host "[!] Potential DLL hijack vector detected:" -ForegroundColor Red
-            Write-Host "    Software     : $displayName"
-            Write-Host "    Install Path : $installPath"
-            Write-Host "    [!] You have write access to this directory! $installPath" -ForegroundColor Cyan
-            Write-Host "    [!] This is only useful if a schedule service\ autorun starts this software" -ForegroundColor Cyan
+    $uninstallKeys = @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+    )
+    foreach ($keyPath in $uninstallKeys) {
+        $software = Get-ItemProperty -Path $keyPath -ErrorAction SilentlyContinue | 
+            Select-Object DisplayName, InstallLocation | 
+            Where-Object { $_.DisplayName -and $_.InstallLocation }
+        foreach ($app in $software) {
+            $displayName = $app.DisplayName
+            $installPath = $app.InstallLocation.TrimEnd('\')
+            if (-Not (Test-Path -Path $installPath)) {
+                continue
+            }
+            $writeable = Check-Perms $installPath
+            if ($writeable) {
+                Write-Host "[!] Potential DLL hijack vector detected:" -ForegroundColor Red
+                Write-Host "    Software     : $displayName"
+                Write-Host "    Install Path : $installPath"
+                Write-Host "    [!] You have write access to this directory! $installPath" -ForegroundColor Cyan
+                Write-Host "    [!] This is only useful if a scheduled task\autorun starts this software" -ForegroundColor Cyan
+            }
         }
     }
 }
