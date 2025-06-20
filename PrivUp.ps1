@@ -72,7 +72,7 @@ function Check_Services {
     Write-Host "`n[+] Checking services for hijacking opportunities..." -ForegroundColor Yellow
 
     $canShutdown = (whoami /priv | Select-String "SeShutdownPrivilege") -ne $null
-    try{$servicesRaw = Get-CimInstance -ClassName Win32_Service -ErrorAction Stop| Select-Object Name, StartMode, PathName}
+    try{$servicesRaw = Get-CimInstance -ClassName Win32_Service -ErrorAction Stop| Select-Object Name, StartMode, PathName, StartName}
     catch{
         Write-Host "    [!] Could not enumerate services" -ForegroundColor Magenta
     }
@@ -81,6 +81,7 @@ function Check_Services {
         foreach ($svc in $servicesRaw) {
             $name = $svc.Name.Trim()
             $mode = $svc.StartMode.Trim()
+            $startName = $svc.StartName
             try{$pathname = $svc.PathName.Trim()}
             catch {continue}
             if (-not $pathname) { continue }
@@ -90,20 +91,25 @@ function Check_Services {
             $exeDir = Split-Path $exePath -Parent
             $canWriteExe = Check-Perms $exePath
             $canWriteDir = Check-Perms $exeDir
-            if ($canWriteExe) {
-                Write-Host "    [!] Writable service EXE: $exePath (Service: $name)" -ForegroundColor Red
-            } elseif ($canWriteDir) {
-                Write-Host "    [!] Writable service directory: $exeDir (Service: $name)" -ForegroundColor Red
-            } else {continue}
-
-            if ($mode -match 'Auto' -and $canShutdown) {
-                Write-Host "        [+] Can restart machine to exploit service $name" -ForegroundColor Cyan
-            } else {
-                $startCheck = sc.exe continue $name
-                if ($startCheck -contains "Access is denied") {
-                    Write-Host "        [+] Can restart service '$name' manually" -ForegroundColor Cyan
+            if ($canWriteExe -or $canWriteDir){
+                if ($mode -match 'Auto' -and $canShutdown) {
+                    if ($canWriteExe) {
+                        Write-Host "    [!] Writable service EXE: $exePath (Service: $name)" -ForegroundColor Red
+                    } elseif ($canWriteDir) {
+                        Write-Host "    [!] Writable service directory: $exeDir (Service: $name)" -ForegroundColor Red
+                    }
+                    Write-Host "        [+] Can restart machine to exploit the $name service. Runs as: $startName" -ForegroundColor Cyan
                 } else {
-                    Write-Host "    [-] Cannot restart service '$name' (access denied)" -ForegroundColor Magenta
+                    $startCheck = sc.exe continue $name
+                    $startCheck = $startCheck -join " "
+                    if ($startCheck -notmatch "Access is denied") {
+                        if ($canWriteExe) {
+                            Write-Host "    [!] Writable service EXE: $exePath (Service: $name)" -ForegroundColor Red
+                        } elseif ($canWriteDir) {
+                            Write-Host "    [!] Writable service directory: $exeDir (Service: $name)" -ForegroundColor Red
+                        }
+                        Write-Host "        [+] You can restart the'$name' service manually. Runs as: $startName" -ForegroundColor Cyan
+                    } 
                 }
             }
         }
@@ -134,7 +140,7 @@ function Check_Installed{
                 Write-Host "    Software     : $displayName"
                 Write-Host "    Install Path : $installPath"
                 Write-Host "    [!] You have write access to this directory! $installPath" -ForegroundColor Cyan
-                Write-Host "    [!] This is only useful if a scheduled task\autorun starts this software" -ForegroundColor Cyan
+                Write-Host "    [!] This is not a autoPwn this is only useful if a scheduled task\autorun starts this software" -ForegroundColor Cyan
             }
         }
     }
@@ -242,7 +248,7 @@ function Check_Passwords {
     if (-not($cmdkeyOutput -match "\*\s*NONE\s*\*")) {
         Write-Host "    [!] Stored Credentials Found via cmdkey:" -ForegroundColor Red
         Write-Host "$cmdkeyOutput"
-        Write-Host "    [!] Can exploit with 'vaultcmd /listcred' or mimikatz" -ForegroundColor cyan
+        Write-Host "    [!] Can dump with mimikatz 'credman' note you do have to be admin" -ForegroundColor cyan
     }
 
     Write-Host "    [+] Looking for unattended" -ForegroundColor Yellow
@@ -448,7 +454,7 @@ function Check_misc {
         $outputFile = $hives[$hive]
         try {
             $result = reg save $hive $outputFile /y 2>&1
-            if (Test-Path $outputFile) {
+            if (Test-Path $outputFile -and ((Get-Item $outputFile -ErrorAction Stop).Length -gt 0)) {
                 Write-Host "    [!] SUCCESS: Able to save $hive to $outputFile" -ForegroundColor Red
             } 
         } catch {}
@@ -469,6 +475,18 @@ function Check_misc {
                 }
             }
         } catch {}
+    }
+
+    $envVars = Get-ChildItem Env:
+    foreach ($var in $envVars) {
+        $name = $var.Name
+        $value = $var.Value
+        if ($value -imatch "password|pwd|secret|token|key|cred|admin|login" -or
+            $name -imatch "password|pwd|secret|token|key|cred|admin|login") {
+            Write-Host "    [!] Interesting environment variable found:" -ForegroundColor Red
+            Write-Host "        Name  : $name" -ForegroundColor Cyan
+            Write-Host "        Value : $value" -ForegroundColor Cyan
+        }
     }
 
 }
