@@ -362,14 +362,15 @@ function Check_Passwords {
     $autoLogon = Get-Item "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -ErrorAction SilentlyContinue
     if ($autoLogon) {
         $autoLogonProps = $autoLogon.GetValueNames() | Where-Object { $_ -match 'pass' -and -not $_ -match 'PasswordExpiryWarning' }
+        Write-Host "        [!] Autologon configuration found!" -ForegroundColor Red
         if ($autoLogonProps) {
-            Write-Host "        [!] Autologon configuration found!" -ForegroundColor Red
+            
             foreach ($prop in $autoLogonProps) {
                 $val = $autoLogon.GetValue($prop)
                 Write-Host "        [+] $prop = $val" -ForegroundColor Red
             }
-            Write-Host "        [+] Can manually enumerate with 'Get-Item 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon''" -ForegroundColor Magenta
         }
+        Write-Host "        [+] Can manually enumerate with 'Get-Item 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'" -ForegroundColor Magenta
     }
 
     Write-Host "    [+] Looking for Powershell History" -ForegroundColor Yellow
@@ -409,7 +410,8 @@ function Check_Passwords {
 
 function Check_Scheduled{
     Write-Host "`n[+] Checking Scheduled Tasks..."  -ForegroundColor Yellow
-    $tasks = Get-ScheduledTask
+    try{$tasks = Get-ScheduledTask}
+    catch{return}
     $CurrentUser = "$env:USERNAME"
 
     foreach ($task in $tasks) {
@@ -500,7 +502,7 @@ function Check_Startup {
     }
 }
 
-function Check_me {
+function Check_Me {
     Write-Host "`n[+] Checking User Privs..." -ForegroundColor Yellow
     $hkcu = Get-ItemProperty -Path "HKCU:\Software\Policies\Microsoft\Windows\Installer" -ErrorAction SilentlyContinue
     $hklm = Get-ItemProperty -Path "HKLM:\Software\Policies\Microsoft\Windows\Installer" -ErrorAction SilentlyContinue
@@ -523,6 +525,7 @@ function Check_me {
         'S-1-2-0',
         'S-1-5-64-10',
         'S-1-16-8192',
+        'S-1-16-12288',
         'S-1-5-32-555',
         'S-1-5-14',
         'S-1-5-32-580'
@@ -572,7 +575,7 @@ function Check_me {
         }
     } 
 }
-function Invoke-watson
+function Invoke_Watson
 {
     Write-Host "`n[+] Running Watson..." -ForegroundColor Yellow
     try{
@@ -591,72 +594,67 @@ function Invoke-watson
     }
 }
 
-function Get-NetworkPortInfo {
+function Get_NetworkPortInfo {
     Write-Host "`n[+] Checking open ports..." -ForegroundColor Yellow
 
-try {
-    $seenPIDs = @{}
-    $ignoreList = @(
-    "svchost.exe",
-    "lsass.exe",
-    "wininit.exe",
-    "csrss.exe",
-    "services.exe",
-    "winlogon.exe",
-    "dwm.exe",
-    "system idle process",
-    "system",
-    "smss.exe",
-    "spoolsv.exe",
-    "backgroundtaskhost.exe"
-)
-    $netstatOutput = netstat -ano | Select-String "^(  )?(TCP|UDP)"
-
-    $netConns = foreach ($line in $netstatOutput) {
-        $parts = ($line -split '\s+') -ne ""
-        if ($parts.Count -ge 4) {
-            $proto = $parts[0]
-            $local = $parts[1]
-            $remote = $parts[2]
-            $state = if ($proto -eq "TCP") { $parts[3] } else { "-" }
-            $pid1 = if ($proto -eq "TCP") { $parts[4] } else { $parts[3] }
-            if ($seenPIDs.ContainsKey($pid1)) { continue }
-            $seenPIDs[$pid1] = $true
-            $procInfo = Get-CimInstance Win32_Process -Filter "ProcessId=$pid1" -ErrorAction SilentlyContinue
+    try {
+        $seenPIDs = @{}
+        $ignoreList = @(
+            "svchost.exe", "lsass.exe", "wininit.exe", "csrss.exe", "services.exe", "winlogon.exe",
+            "dwm.exe", "system idle process", "system", "smss.exe", "spoolsv.exe", "backgroundtaskhost.exe"
+        )
+        $procTable = @{}
+        Get-CimInstance Win32_Process -ErrorAction Stop| ForEach-Object {
+            $procTable[[int]$_.ProcessId] = $_
+        }
+        $netstatOutput = netstat -ano | Select-String "^(  )?(TCP|UDP)"
+        $netConns = foreach ($line in $netstatOutput) {
+            $parts = ($line -split '\s+') -ne ""
             
-            $isStandard = $ignoreList -contains $procInfo.Name.ToLower()
-            $hasCmdLine = -not [string]::IsNullOrWhiteSpace($procInfo.CommandLine)
-            if ($isStandard -and -not $hasCmdLine) {continue}
-            if ($procInfo) {
-                [PSCustomObject]@{
-                    Protocol     = $proto
-                    LocalAddress = $local
-                    RemoteAddress= $remote
-                    State        = $state
-                    PID          = $pid1
-                    ProcessName  = $procInfo.Name
-                    Path         = $procInfo.ExecutablePath
-                    CommandLine  = $procInfo.CommandLine
+            if ($parts.Count -ge 4) {
+                $proto = $parts[0]
+                $local = $parts[1]
+                $remote = $parts[2]
+                $state = if ($proto -eq "TCP") { $parts[3] } else { "-" }
+                $pid1 = if ($proto -eq "TCP") { $parts[4] } else { $parts[3] }
+
+                if ($seenPIDs.ContainsKey($pid1)) { continue }
+                $seenPIDs[$pid1] = $true
+                $procInfo = $procTable[[int]$pid1]
+                if ($procInfo) {
+                    $isStandard = $ignoreList -contains $procInfo.Name.ToLower()
+                    $hasCmdLine = -not [string]::IsNullOrWhiteSpace($procInfo.CommandLine)
+                    if ($isStandard -and -not $hasCmdLine) { continue }
+
+                    [PSCustomObject]@{
+                        Protocol      = $proto
+                        LocalAddress  = $local
+                        RemoteAddress = $remote
+                        State         = $state
+                        PID           = $pid1
+                        ProcessName   = $procInfo.Name
+                        Path          = $procInfo.ExecutablePath
+                        CommandLine   = $procInfo.CommandLine
+                    }
                 }
             }
         }
-    }
-
-    foreach ($conn in $netConns | Sort-Object Protocol, LocalAddress) {
-        Write-Host "    [+] Potentially interesting network connection" -ForegroundColor Red
-        $displayCmd = if ($conn.CommandLine.Length -gt 150) { $conn.CommandLine.Substring(0,150) + "..." } else { $conn.CommandLine }
-        Write-Host "        Local Address: $($conn.LocalAddress)"
-        Write-Host "        PID          : $($conn.PID)"
-        Write-Host "        Process Name : $($conn.ProcessName)"
-        if ($conn.CommandLine) {
-            Write-Host "        Command Line : $($displayCmd)"
+        write-host "$netConns"
+        foreach ($conn in $netConns | Sort-Object Protocol, LocalAddress) {
+            Write-Host "    [+] Potentially interesting network connection" -ForegroundColor Red
+            $displayCmd = if ($conn.CommandLine.Length -gt 150) { $conn.CommandLine.Substring(0,150) + "..." } else { $conn.CommandLine }
+            Write-Host "        Local Address: $($conn.LocalAddress)"
+            Write-Host "        PID          : $($conn.PID)"
+            Write-Host "        Process Name : $($conn.ProcessName)"
+            if ($conn.CommandLine) {
+                Write-Host "        Command Line : $displayCmd"
+            }
         }
+    } catch {
+        Write-Host "    [!] Could not retrieve connection or process info." -ForegroundColor Cyan
     }
-} catch {
-    Write-Host "    [!] Could not retrieve connection or process info." -ForegroundColor Cyan
 }
-}
-function check-files{
+function Check_Files{
     Write-Host "`n[+] Scanning for non standard directories for files and ADS..." -ForegroundColor Yellow
 
     $usersPath = "C:\Users"
@@ -695,7 +693,7 @@ function check-files{
         }
     }
     Write-Host "[+] Looking in C:\..." -ForegroundColor Yellow
-    $standardDirs = @('ESD', 'System Volume Information', 'Config.Msi', '$Windows.~WS', '$WINDOWS.~BT', 'Program Files', 'Program Files (x86)', 'Users', 'Windows', '$Recycle.Bin', 'PerfLogs', 'ProgramData')
+    $standardDirs = @('$WinREAgent', 'ESD', 'System Volume Information', 'Config.Msi', '$Windows.~WS', '$WINDOWS.~BT', 'Program Files', 'Program Files (x86)', 'Users', 'Windows', '$Recycle.Bin', 'PerfLogs', 'ProgramData')
 
     Get-ChildItem -Path "C:\" -Force -ErrorAction SilentlyContinue | ForEach-Object {
         if ($standardDirs -notcontains $_.Name) {
@@ -727,7 +725,7 @@ Check_Processes
 Check_Passwords
 Check_Scheduled
 Check_Startup
-Check_me
-check-files
-Get-NetworkPortInfo
-Invoke-watson
+Check_Me
+Check_Files
+Get_NetworkPortInfo
+Invoke_Watson
