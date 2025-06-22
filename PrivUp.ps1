@@ -57,8 +57,8 @@ function Check-Perms($target) {
                 if ($user -match [regex]::Escape($group) -and $perms -match '\([^\)]*[WMF][^\)]*\)') {					 
                     If (Test-Path $target -pathType container) {
                     $test_tmp_filename = "writetest.txt"
-                    $test_filename = (Join-Path $target $test_tmp_filename)
                     Try { 
+                        $test_filename = (Join-Path $target $test_tmp_filename)
                         [io.file]::OpenWrite($test_filename).close()
                         Remove-Item -ErrorAction SilentlyContinue $test_filename
                         return $true
@@ -176,7 +176,6 @@ function Check_Services {
         Write-Host "    [!] Unquoted service path. You can exploit by placing a malicous exe and restarting the service. For example: If the service path is at 'C:\Fake Path\That is\Bad\Service.exe' place a malicous exe at 'C:\Fake Path\That.exe'" -ForegroundColor Magenta
     }
 }
-
 function Check_Installed{
     Write-Host "`n[+] Checking installed software for DLL hijacking possibilities..." -ForegroundColor Yellow
     $uninstallKeys = @(
@@ -190,6 +189,7 @@ function Check_Installed{
         foreach ($app in $software) {
             $displayName = $app.DisplayName
             $installPath = $app.InstallLocation.TrimEnd('\')
+            write-host "    [+] Non default installed software $displayName" -ForegroundColor Cyan
             try {
                 if (-Not (Test-Path -Path $installPath -ErrorAction Stop)) {
                     continue
@@ -197,9 +197,9 @@ function Check_Installed{
             } catch {continue}
             $writeable = Check-Perms $installPath
             if ($writeable) {
-                Write-Host "[!] Potential DLL hijack vector detected:" -ForegroundColor Red
-                Write-Host "    Software     : $displayName"
-                Write-Host "    Install Path : $installPath"
+                Write-Host "    [!] Potential DLL hijack vector detected:" -ForegroundColor Red
+                Write-Host "        Software     : $displayName"
+                Write-Host "        Install Path : $installPath"
                 Write-Host "    [!] You have write access to this directory! $installPath" -ForegroundColor Cyan
                 Write-Host "    [!] You can place a malicous dll here. This is only useful if high level user then uses this software." -ForegroundColor Magenta
             }
@@ -209,8 +209,6 @@ function Check_Installed{
 
 function Check_Processes{
     Write-Host "`n[+] Checking running processes for hijacking opportunities..." -ForegroundColor Yellow
-
-
     try {
         $processes = Get-CimInstance Win32_Process -ErrorAction Stop
     } catch {
@@ -667,9 +665,10 @@ function Check_Files{
 
             foreach ($file in $files) {
                 # Get all streams except the default stream
-                $ads = Get-Item -Path $file.FullName -Stream * -ErrorAction SilentlyContinue |
-                    Where-Object { $_.Stream -ne ':$DATA' -and $_.Stream -ne 'Zone.Identifier' }
-
+                try{
+                    $ads = Get-Item -Path $file.FullName -Stream * -ErrorAction SilentlyContinue |
+                        Where-Object { $_.Stream -ne ':$DATA' -and $_.Stream -ne 'Zone.Identifier' }
+                }catch{continue}
                 if ($ads) {
                     foreach ($stream in $ads) {
                         $streamPath = "$($stream.FileName):$($stream.Stream)"
@@ -714,7 +713,34 @@ function Check_Files{
             }
         }
     }
+    Write-Host "    [+] Files in registry that may contain credentials" -ForegroundColor Yellow
 
+    $registryChecks = @(
+        'HKCU:\Software\ORL\WinVNC3\Password',
+        'HKLM:\SOFTWARE\RealVNC\WinVNC4',
+        'HKLM:\SYSTEM\CurrentControlSet\Services\SNMP',
+        'HKCU:\Software\TightVNC\Server',
+        'HKCU:\Software\SimonTatham\PuTTY\Sessions',
+        'HKCU:\Software\OpenSSH\Agent\Keys'
+    )
+    foreach ($reg in $registryChecks) {
+        
+        try {
+            $item = Get-ItemProperty -Path $reg -ErrorAction Stop
+            if ($item) {
+                Write-Host "    [+] Looking inside $reg" -ForegroundColor Red
+                foreach ($prop in $item.PSObject.Properties) {
+                    Write-Host ("       {0}: {1}" -f $prop.Name, $prop.Value)
+                }
+            }    
+        } catch {}
+    }
+    # Scan inetpub for web.config and logs
+    if (Test-Path "C:\inetpub") {
+        Write-Host "    [+] Scanning inetpub..." -ForegroundColor Yellow
+        Get-ChildItem -Path "C:\inetpub" -Recurse -Include "web.config", "*.log", "*.php","*.db" -ErrorAction SilentlyContinue |
+            Select-Object FullName
+    }
 }
 
 
