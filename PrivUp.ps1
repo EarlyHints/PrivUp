@@ -522,7 +522,11 @@ function Check_me {
         'S-1-5-113',
         'S-1-2-0',
         'S-1-5-64-10',
-        'S-1-16-8192'
+        'S-1-16-8192',
+        'S-1-5-32-555',
+        'S-1-5-14',
+        'S-1-5-32-580'
+
     )
     $SafePrivileges = @(
         'SeChangeNotifyPrivilege',
@@ -695,19 +699,20 @@ function check-files{
 
     Get-ChildItem -Path "C:\" -Force -ErrorAction SilentlyContinue | ForEach-Object {
         if ($standardDirs -notcontains $_.Name) {
-            if (-not(Test-Path -Path $_.FullName)){continue}
-            if ($_.PSIsContainer) {
-                Write-Host "    [*] Non-standard directory found: $($_.FullName)" -ForegroundColor Red
-            } else {
-                Write-Host "    [*] Non-standard file found: $($_.FullName)" -ForegroundColor Red
-                try{
-                    $ads = Get-Item -Path $_.FullName -Stream * -ErrorAction SilentlyContinue | Where-Object { $_.Stream -ne ':$DATA' -and $_.Stream -ne 'Zone.Identifier' }
-                    if ($ads) {
-                        foreach ($stream in $ads) {
-                            Write-Host "        [!] ADS found: $($stream.FileName):$($stream.Stream)" -ForegroundColor Red
+            if (Test-Path -Path $_.FullName){
+                if ($_.PSIsContainer) {
+                    Write-Host "    [*] Non-standard directory found: $($_.FullName)" -ForegroundColor Red
+                } else {
+                    Write-Host "    [*] Non-standard file found: $($_.FullName)" -ForegroundColor Red
+                    try{
+                        $ads = Get-Item -Path $_.FullName -Stream * -ErrorAction SilentlyContinue | Where-Object { $_.Stream -ne ':$DATA' -and $_.Stream -ne 'Zone.Identifier' }
+                        if ($ads) {
+                            foreach ($stream in $ads) {
+                                Write-Host "        [!] ADS found: $($stream.FileName):$($stream.Stream)" -ForegroundColor Red
+                            }
                         }
-                    }
-                }catch{}
+                    }catch{}
+                }
             }
         }
     }
