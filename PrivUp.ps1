@@ -162,14 +162,29 @@ function Check_Services {
         $path = ($service.PathName -split " -")[0]
         $hijackablePaths = Test-Unquoted -exePath $path
         if (-not $hijackablePaths) {continue}
-        $exploit = $true
-        Write-Host "    [+] Found unquoted service path" -ForegroundColor Red
-        Write-Host "        Name: $($service.Name)" 
-        Write-Host "        DisplayName: $($service.DisplayName)" 
-        Write-Host "        StartMode: $($service.StartMode)" 
-        Write-Host "        PathName: $($path)" 
-        foreach ($path in $hijackablePaths) {
-                Write-Host "        [!] Potential path hijack: Can write $path" -ForegroundColor Red
+        
+        
+        $startCheck = sc.exe continue $name
+        $startCheck = $startCheck -join " "
+        $howToExploit = $false
+        if ($startCheck -notmatch "Access is denied") {
+            $howToExploit = "   [+] You can restart the service to exploit"
+        }
+        elseif ($service.StartMod -eq "Automatic" -and $canShutdown) {
+             $howToExploit = "        [+] You can restart computer to exploit"
+        }
+
+        if ( $howToExploit){
+            $exploit = $true
+            Write-Host "    [+] Found unquoted service path" -ForegroundColor Red
+            Write-Host "        Name: $($service.Name)" 
+            Write-Host "        DisplayName: $($service.DisplayName)" 
+            Write-Host "        StartMode: $($service.StartMode)" 
+            Write-Host "        PathName: $($path)" 
+            foreach ($path in $hijackablePaths) {
+                    Write-Host "        [!] Potential path hijack: Can write $path" -ForegroundColor Red
+            }
+            write-host "$howToExploit" -ForegroundColor magenta
         }
     }
     if ($exploit){
@@ -260,7 +275,7 @@ function Check_Processes{
         } catch {
             $runAsUser = "SYSTEM"
         }
-        if ($runAsUser -eq $currentUser) { continue }
+        if ($runAsUser -imatch $currentUser) { continue }
 
         if (-not (Test-Path -Path $exePath -PathType Leaf)) { continue }
         $seenPaths[$exePath] = $true
