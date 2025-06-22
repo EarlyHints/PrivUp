@@ -2,11 +2,6 @@
 
 A Windows priv esc finder
 
-### How you should use this tool in a OSCP setting
-1) Check for quick wins (check whoami /all, C:\ dir and user dir) - if no priv...
-2) Run ".\PrivUp.ps1" - if no priv...
-3) Run winPeas
-
 ### What does it check?
 1) Checks if you can write to directories in path (for DLL hijacking)
 2) Check if you can write to services and resart them
@@ -16,4 +11,7 @@ A Windows priv esc finder
 6) Checks for passwords in default locations (does not search filesystem)
 7) Checks if you can write to services and checks for unquooted services
 8) Checks startup apps 
-9) Check for install elevated, sam/system hive access, modifiable services and interesting environment variables
+9) Check for install elevated and audits your groups/ privs
+10) Looks for interesting files and hidden ADS
+11) Looks at network open ports
+12) Runs watson
