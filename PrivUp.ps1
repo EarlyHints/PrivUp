@@ -56,6 +56,7 @@ function Check_Path {
 
 function Check-Perms($target) {
     $acls = icacls $target
+    $owner = (Get-Acl -Path $target).Owner
     foreach ($line in $acls) {
         if ($line -like "$target*") {
         $line = $line.Substring($target.Length).Trim()
@@ -64,18 +65,19 @@ function Check-Perms($target) {
         $user = $matches['user'].Trim()
         $perms = $matches['perms'].Trim()
         foreach ($group in $myGroups) {
-                if ($user -match [regex]::Escape($group) -and $perms -match '\([^\)]*[WMF][^\)]*\)') {					 
+                if ($user -match [regex]::Escape($group) -and $perms -match '\([^\)]*[WMF][^\)]*\)' ) {					 
                     If (Test-Path $target -pathType container) {
                     $test_tmp_filename = "writetest.txt"
                     Try { 
                         $test_filename = (Join-Path $target $test_tmp_filename)
                         [io.file]::OpenWrite($test_filename).close()
                         Remove-Item -ErrorAction SilentlyContinue $test_filename
-                        return $true
+                        return "Writable Path: $target"
                     }
-                    Catch {return $false}
+                    Catch {}
                     }
-                    return $true
+                }elseif ($owner -match [regex]::Escape($group)){
+                    return "You Own This Path: $target"
                 }
                 }
             }
@@ -136,9 +138,9 @@ function Check_Services {
                     $startCheck = $startCheck -join " "
                     if ($startCheck -notmatch "Access is denied") {
                         if ($canWriteExe) {
-                            Write-Color "    [!] Writable service EXE: $exePath (Service: $name)"  Red
+                            Write-Color "    [!] $canWriteExe (Service: $name)"  Red
                         } elseif ($canWriteDir) {
-                            Write-Color "    [!] Writable service directory: $exeDir (Service: $name)"  Red
+                            Write-Color "    [!] $canWriteDir (Service: $name)"  Red
                         }
                         Write-Color "        [+] You can restart the'$name' service manually. Runs as: $startName"  Cyan
                     } 
@@ -225,7 +227,7 @@ function Check_Installed{
                 Write-Color "    [!] Potential DLL hijack vector detected:"  Red
                 Write-Color "        Software     : $displayName"
                 Write-Color "        Install Path : $installPath"
-                Write-Color "    [+] You have write access to this directory! $installPath"  Cyan
+                Write-Color "    [+] $writeable"  Cyan
                 Write-Color "    [+] You can place a malicous dll here. This is only useful if high level user then uses this software."  Cyan
             }
         }
@@ -234,18 +236,20 @@ function Check_Installed{
 
 function Check_Processes{
     Write-Color "`n[+] Checking running processes for hijacking opportunities..."  Yellow
+    $fallback = $true
     try {
         $processes = Get-CimInstance Win32_Process -ErrorAction Stop
+        $fallback = $false
     } catch {
-        Write-Color "    [!] Could not enumerate processes"  Magenta
-        return
+        Write-Color "    [!] Could not enumerate processes with Get-CimInstance falling back to Get-Process... Less information..."  Magenta
+        $processes = Get-Process| Select-Object -Property Name, Id, CommandLine, Path
     }
 
     $seenPaths = @{}
     $pathAclCache = @{}
     $pathWriteCache = @{}
 
-    $currentUser = "$($env:USERDOMAIN)\$($env:USERNAME)"
+    $currentUser = "$($env:USERDOMAIN)\\$($env:USERNAME)"
     function Get-PathOwner {
         param($path)
         if (-not $pathAclCache.ContainsKey($path)) {
@@ -269,12 +273,19 @@ function Check_Processes{
 
     $exploit = $false
     foreach ($proc in $processes) {
-        $exePath = $proc.ExecutablePath
-        $cmdLine = $proc.CommandLine
-
+        if ($fallback){
+            $exePath = $proc.Path
+            $cmdLine = $proc.CommandLine
+            $pid1 = $proc.ID
+        }else{
+            $exePath = $proc.ExecutablePath
+            $cmdLine = $proc.CommandLine
+            $pid1 = $proc.ProcessId
+        }
+        
         if ($cmdLine -and $cmdLine -imatch "password|pwd|secret|token|key|cred|login") {
             $displayCmd = if ($cmdLine.Length -gt 150) { $cmdLine.Substring(0,150) + "..." } else { $cmdLine }
-            Write-Color "    [+] Interesting process found (PID $($proc.ProcessId)):"  Red
+            Write-Color "    [+] Interesting process found (PID $($pid1)):"  Red
             Write-Color "        $displayCmd"
         }
         if ([string]::IsNullOrEmpty($exePath) -or $seenPaths.ContainsKey($exePath)) { continue }
@@ -289,7 +300,6 @@ function Check_Processes{
 
         if (-not (Test-Path -Path $exePath -PathType Leaf)) { continue }
         $seenPaths[$exePath] = $true
-
         $integrity = Get-PathOwner $exePath
         $exeDir = Split-Path $exePath -Parent
 
@@ -298,15 +308,15 @@ function Check_Processes{
 
         if ($canWriteExe -or $canWriteDir) {
             $exploit = $true
-            Write-Color "    [!] Potential Hijackable Process Detected (PID $($proc.ProcessId))"  Red
+            Write-Color "    [!] Potential Hijackable Process Detected (PID $($pid1))"  Red
             Write-Color "        Executable: $exePath"
             Write-Color "        Run As: $runAsUser"
             Write-Color "        Integrity Level: $integrity"
             if ($canWriteExe) {
-                Write-Color "        Writable EXE: $exePath"  Red
+                Write-Color "        $canWriteExe"  Red
             }
             if ($canWriteDir) {
-                Write-Color "        Writable Directory: $exeDir"  Red
+                Write-Color "        $canWriteDir"  Red
             }
         }
     }
@@ -473,8 +483,8 @@ function Check_Scheduled{
                 Write-Color "        Run As User: $runAsUser"
                 Write-Color "        Task To Run: $fullCommand"
                 Write-Color "        EXE Path    : $exePath"
-                if ($writeable) { Write-Color "    [!] Write access to EXE"  Red} 
-                if ($dirWrite)  { Write-Color "    [!] Write access to directory"   Red}
+                if ($writeable) { Write-Color "    [!] $writeable"  Red} 
+                if ($dirWrite)  { Write-Color "    [!] $dirWrite"   Red}
                 if ($unquotedWithSpaces) { 
                     foreach ($path in $hijackablePaths) {
                         Write-Color "    [!] Potential unquoted path hijack: Can write $path"  Red
@@ -588,7 +598,7 @@ function Invoke_Watson
         [W4ts0n.Program]::Main(@("-h"))
         [Console]::SetOut($OldConsoleOut)
         $Results = $StringWriter.ToString()
-        $Results
+        Write-Colo $Results
     }
     catch {
         Write-Color "    [+] Failed to run Watson OS build too new"  Magenta
@@ -601,13 +611,11 @@ function Get_NetworkPortInfo {
     try {
         $seenPIDs = @{}
         $ignoreList = @(
-            "svchost.exe", "lsass.exe", "wininit.exe", "csrss.exe", "services.exe", "winlogon.exe",
-            "dwm.exe", "system idle process", "system", "smss.exe", "spoolsv.exe", "backgroundtaskhost.exe"
+            "svchost", "lsass", "wininit", "csrss", "services", "winlogon",
+            "dwm", "system idle process", "system", "smss", "spoolsv", "backgroundtaskhost"
         )
         $procTable = @{}
-        Get-CimInstance Win32_Process -ErrorAction Stop| ForEach-Object {
-            $procTable[[int]$_.ProcessId] = $_
-        }
+        Get-Process | ForEach-Object {$procTable[$_.Id] = $_}
         $netstatOutput = netstat -ano | Select-String "^(  )?(TCP|UDP)"
         $netConns = foreach ($line in $netstatOutput) {
             $parts = ($line -split '\s+') -ne ""
@@ -634,7 +642,7 @@ function Get_NetworkPortInfo {
                         State         = $state
                         PID           = $pid1
                         ProcessName   = $procInfo.Name
-                        Path          = $procInfo.ExecutablePath
+                        Path          = $procInfo.Path
                         CommandLine   = $procInfo.CommandLine
                     }
                 }
@@ -643,7 +651,7 @@ function Get_NetworkPortInfo {
         foreach ($conn in $netConns | Sort-Object Protocol, LocalAddress) {
             Write-Color "    [+] Potentially interesting network connection"  Red
             $displayCmd = if ($conn.CommandLine.Length -gt 150) { $conn.CommandLine.Substring(0,150) + "..." } else { $conn.CommandLine }
-            Write-Color "        Local Address: $($conn.LocalAddress)"
+            Write-Color "        Local Address: ($($conn.Protocol)) $($conn.LocalAddress)"
             Write-Color "        PID          : $($conn.PID)"
             Write-Color "        Process Name : $($conn.ProcessName)"
             if ($conn.CommandLine) {
@@ -666,7 +674,6 @@ function Check_Files{
             Write-Color "    [+] Found $($files.Count) files in $userDir"  Red
 
             foreach ($file in $files) {
-                # Get all streams except the default stream
                 try{
                     $ads = Get-Item -Path $file.FullName -Stream * -ErrorAction SilentlyContinue |
                         Where-Object { $_.Stream -ne ':$DATA' -and $_.Stream -ne 'Zone.Identifier' }
@@ -737,7 +744,6 @@ function Check_Files{
             }    
         } catch {}
     }
-    # Scan inetpub for web.config and logs
     if (Test-Path "C:\inetpub") {
         Write-Color "    [+] Scanning inetpub..."  Yellow
         Get-ChildItem -Path "C:\inetpub" -Recurse -Include "web.config", "*.log", "*.php","*.db" -ErrorAction SilentlyContinue |

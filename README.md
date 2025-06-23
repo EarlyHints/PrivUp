@@ -15,3 +15,5 @@ A Windows priv esc finder
 10) Looks for interesting files and hidden ADS
 11) Looks at network open ports
 12) Runs watson
+
+1) need to fix access denied stuff..
