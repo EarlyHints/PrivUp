@@ -131,6 +131,7 @@ function Check_Services {
                         Write-Color "    [!] Writable service EXE: $exePath (Service: $name)"  Red
                     } elseif ($canWriteDir) {
                         Write-Color "    [!] Writable service directory: $exeDir (Service: $name)"  Red
+                        Write-Color "    [!] Path: $exePath"  Red
                     }
                     Write-Color "        [+] Can restart machine to exploit the $name service. Runs as: $startName"  Cyan
                 } else {
@@ -227,8 +228,7 @@ function Check_Installed{
                 Write-Color "    [!] Potential DLL hijack vector detected:"  Red
                 Write-Color "        Software     : $displayName"
                 Write-Color "        Install Path : $installPath"
-                Write-Color "    [+] $writeable"  Cyan
-                Write-Color "    [+] You can place a malicous dll here. This is only useful if high level user then uses this software."  Cyan
+                Write-Color "    [+] $writeable"  Red
             }
         }
     }
@@ -288,13 +288,13 @@ function Check_Processes{
             Write-Color "    [+] Interesting process found (PID $($pid1)):"  Red
             Write-Color "        $displayCmd"
         }
-        if ([string]::IsNullOrEmpty($exePath) -or $seenPaths.ContainsKey($exePath)) { continue }
+        if ([string]::IsNullOrEmpty($exePath) -or $seenPaths.ContainsKey($exePath) -or $exePath -imatch "\\Users\\$env:USERNAME\\") { continue }
 
         try {
             $owner = $proc.GetOwner()
             $runAsUser = "$($owner.Domain)\$($owner.User)"
         } catch {
-            $runAsUser = "SYSTEM"
+            $runAsUser = "Unknown"
         }
         if ($runAsUser -imatch $currentUser) { continue }
 
@@ -598,7 +598,7 @@ function Invoke_Watson
         [W4ts0n.Program]::Main(@("-h"))
         [Console]::SetOut($OldConsoleOut)
         $Results = $StringWriter.ToString()
-        Write-Colo $Results
+        Write-Color $Results
     }
     catch {
         Write-Color "    [+] Failed to run Watson OS build too new"  Magenta
