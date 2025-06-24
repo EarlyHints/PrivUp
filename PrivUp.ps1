@@ -45,11 +45,13 @@ function Check_Path {
                 if ($line -match [regex]::Escape($group) -and $line -match '(\(F\)|\(M\)|\(W\))') {
                     Write-Color "    [!] Writable directory in PATH: $path (group: $group)"  Red
                     $exploit = $true
+                    break
                 }
             }
+            if ($exploit){break}
         }
         if ($exploit){
-            Write-Color "    [+] You have interesting write permissions, manually check path. You can most likely do DLL hijacking"  Cyan
+            Write-Color "        [+] You have interesting write permissions, manually check path. You can most likely do DLL hijacking"  Cyan
         }
     }
 }
@@ -118,10 +120,10 @@ function Check_Services {
             foreach ($entry in $sd.Access) {
                 if ($entry.IdentityReference -match "$env:USERNAME") {
                     Write-Color "    [!] You can modify service: $name)"  Red
-                    Write-Color "    User            : $($entry.IdentityReference)"
-                    Write-Color "    RegistryRights  : $($entry.RegistryRights)"
-                    Write-Color "    AccessControl   : $($entry.AccessControlType)"
-                    Write-Color "    [+] You can edit this service to point at a malicous exe you created"  Cyan
+                    Write-Color "        User            : $($entry.IdentityReference)"
+                    Write-Color "        RegistryRights  : $($entry.RegistryRights)"
+                    Write-Color "        AccessControl   : $($entry.AccessControlType)"
+                    Write-Color "        [+] You can edit this service to point at a malicous exe you created"  Cyan
                 }
             }
 
@@ -173,6 +175,7 @@ function Check_Services {
     foreach ($service in $services) {
         if ($service.PathName -notmatch ' ') {continue}
         $path = ($service.PathName -split " -")[0]
+        if (-not (Test-Path $exePath)) {continue}
         $hijackablePaths = Test-Unquoted -exePath $path
         if (-not $hijackablePaths) {continue}
         
@@ -205,7 +208,7 @@ function Check_Services {
     }
 }
 function Check_Installed{
-    Write-Color "`n[+] Checking installed software for DLL hijacking possibilities..."  Yellow
+    Write-Color "`n[+] Checking installed software..."  Yellow
     $uninstallKeys = @(
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
         "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
@@ -228,14 +231,49 @@ function Check_Installed{
                 Write-Color "    [!] Potential DLL hijack vector detected:"  Red
                 Write-Color "        Software     : $displayName"
                 Write-Color "        Install Path : $installPath"
-                Write-Color "    [+] $writeable"  Red
+                Write-Color "        [+] $writeable"  Red
             }
         }
     }
 }
 
+function Test-CanDumpProcess {
+    param ([int]$PidVar)
+
+    $PROCESS_QUERY_INFORMATION = 0x0400
+    $PROCESS_VM_READ = 0x0010
+    if (-not ("Kernel32" -as [type])) {
+        $signature = @"
+        using System;
+        using System.Runtime.InteropServices;
+
+        public class Kernel32 {
+            [DllImport("kernel32.dll", SetLastError = true)]
+            public static extern IntPtr OpenProcess(int dwDesiredAccess, bool bInheritHandle, int dwProcessId);
+
+            [DllImport("kernel32.dll", SetLastError = true)]
+            public static extern bool CloseHandle(IntPtr hObject);
+        }
+"@
+        Add-Type -TypeDefinition $signature -ErrorAction SilentlyContinue
+    }
+    try {
+        $handle = [Kernel32]::OpenProcess($PROCESS_QUERY_INFORMATION -bor $PROCESS_VM_READ, $false, $PidVar)
+        if ($handle -ne [IntPtr]::Zero) {
+            [Kernel32]::CloseHandle($handle)
+            return $true
+        } else {return $false}
+    } catch {return $false}
+}
+
 function Check_Processes{
     Write-Color "`n[+] Checking running processes for hijacking opportunities..."  Yellow
+    $interesting = @(
+        "lsass", "explorer", "firefox", "putty", "powershell", "pwsh","java","javaw",
+        "mstsc", "keepass", "mRemoteNG", "cmd", "wscript", "cscript","wscript", "cscript",
+        "remotedesktopmanager", "outlook", "ssms", "ngrok", "teamviewer", "anydesk", "vnc", "runas"
+    )
+
     $fallback = $true
     try {
         $processes = Get-CimInstance Win32_Process -ErrorAction Stop
@@ -272,7 +310,9 @@ function Check_Processes{
     }
 
     $exploit = $false
+    $dump = $false
     foreach ($proc in $processes) {
+        $name = $proc.Name.TrimEnd('.exe')
         if ($fallback){
             $exePath = $proc.Path
             $cmdLine = $proc.CommandLine
@@ -288,8 +328,16 @@ function Check_Processes{
             Write-Color "    [+] Interesting process found (PID $($pid1)):"  Red
             Write-Color "        $displayCmd"
         }
-        if ([string]::IsNullOrEmpty($exePath) -or $seenPaths.ContainsKey($exePath) -or $exePath -imatch "\\Users\\$env:USERNAME\\") { continue }
-
+        
+        if ([string]::IsNullOrEmpty($exePath) -or $seenPaths.ContainsKey($exePath)) { continue }
+        if ($interesting -contains $name.ToLower()) {
+            $dumpTest = Test-CanDumpProcess -PidVar $pid1
+            if ($dumpTest){
+                Write-Color "    [!] You can dump proccess $name (PID: $pid1)" red
+                $dump = $true
+            }
+        }
+        # if ($exePath -imatch "\\Users\\$env:USERNAME\\") { continue }
         try {
             $owner = $proc.GetOwner()
             $runAsUser = "$($owner.Domain)\$($owner.User)"
@@ -297,7 +345,6 @@ function Check_Processes{
             $runAsUser = "Unknown"
         }
         if ($runAsUser -imatch $currentUser) { continue }
-
         if (-not (Test-Path -Path $exePath -PathType Leaf)) { continue }
         $seenPaths[$exePath] = $true
         $integrity = Get-PathOwner $exePath
@@ -309,19 +356,23 @@ function Check_Processes{
         if ($canWriteExe -or $canWriteDir) {
             $exploit = $true
             Write-Color "    [!] Potential Hijackable Process Detected (PID $($pid1))"  Red
+            Write-Color "        Name: $name"
             Write-Color "        Executable: $exePath"
             Write-Color "        Run As: $runAsUser"
             Write-Color "        Integrity Level: $integrity"
             if ($canWriteExe) {
-                Write-Color "        $canWriteExe"  Red
+                Write-Color "        [+] $canWriteExe"  Red
             }
             if ($canWriteDir) {
-                Write-Color "        $canWriteDir"  Red
+                Write-Color "        [+] $canWriteDir"  Red
             }
         }
     }
     if ($exploit){
-        Write-Color "    [!] Look into this process more perhaps you can load a malicous dll or replace the exe."  Cyan
+        Write-Color "    [!] Look into these processes more perhaps you can load a malicous dll or replace the exe."  Cyan
+    }
+    if ($dump){
+        Write-Color "    [!] Look into these processes more you could use procdump to create a .dmp file and try leak passwords."  Cyan
     }
 }
 
@@ -352,7 +403,7 @@ function Check_Passwords {
     $cmdkeyOutput = cmdkey /list
     if (-not($cmdkeyOutput -match "\*\s*NONE\s*\*")) {
         Write-Color "    [!] Stored Credentials Found via cmdkey:"  Red
-        Write-Color "$cmdkeyOutput"
+        $cmdkeyOutput
         Write-Color "    [+] Can try runas with /savecred or do dpapi stuff"  Cyan
     }
 
@@ -648,7 +699,9 @@ function Get_NetworkPortInfo {
                 }
             }
         }
+        $interesting = $false
         foreach ($conn in $netConns | Sort-Object Protocol, LocalAddress) {
+            $interesting = $true
             Write-Color "    [+] Potentially interesting network connection"  Red
             $displayCmd = if ($conn.CommandLine.Length -gt 150) { $conn.CommandLine.Substring(0,150) + "..." } else { $conn.CommandLine }
             Write-Color "        Local Address: ($($conn.Protocol)) $($conn.LocalAddress)"
@@ -657,6 +710,9 @@ function Get_NetworkPortInfo {
             if ($conn.CommandLine) {
                 Write-Color "        Command Line : $displayCmd"
             }
+        }
+        if ($interesting){
+            Write-Color "    [+] If a service looks interesting (e.g. snmp) consider forwarding the port to your host machine to enumerate further"  Cyan
         }
     } catch {
         Write-Color "    [!] Could not retrieve connection or process info."  Magenta
@@ -753,7 +809,7 @@ function Check_Files{
 function Help_Me{
     Write-Color "`n`n[+] Nothing good? Here's some things to do next"  Yellow
     try {
-        $nltest = nltest /dsgetdc:$env:USERDOMAIN
+        $nltest = nltest /dsgetdc:$env:USERDOMAIN 2>$null
         foreach ($line in $nltest) {
             if ($line -match "Forest Name") {
                 Write-Color "   [+] Domain Detected: $line" Red
