@@ -15,5 +15,3 @@ A Windows priv esc finder
 10) Looks for interesting files and hidden ADS
 11) Looks at network open ports
 12) Runs watson
-
-make cmdkey output more pretty
