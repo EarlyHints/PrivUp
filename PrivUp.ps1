@@ -27,6 +27,7 @@ function Write-Color($Text, $Color="White") {
 
 function Check_Path {
     Write-Color "`n[+] Checking PATH for DLL hijacking opportunities..."  Yellow
+    $exploit = $false
     $env:Path -split ';' | ForEach-Object {
         $path = $_.Trim()
         try {
@@ -38,7 +39,7 @@ function Check_Path {
         }
 
         $acl = icacls $path 2>$null
-        $exploit = $false
+        
         foreach ($line in $acl) {
             foreach ($group in $myGroups) {
                 if ($path.StartsWith($env:USERPROFILE)){continue}
@@ -48,11 +49,10 @@ function Check_Path {
                     break
                 }
             }
-            if ($exploit){break}
         }
-        if ($exploit){
-            Write-Color "        [+] You have interesting write permissions, manually check path. You can most likely do DLL hijacking"  Cyan
-        }
+    }
+     if ($exploit){
+        Write-Color "        [+] You have interesting write permissions, manually check path. You can most likely do DLL hijacking"  Cyan
     }
 }
 
@@ -215,12 +215,13 @@ function Check_Installed{
     )
     foreach ($keyPath in $uninstallKeys) {
         $software = Get-ItemProperty -Path $keyPath -ErrorAction SilentlyContinue | 
-            Select-Object DisplayName, InstallLocation | 
+            Select-Object DisplayName, InstallLocation, DisplayVersion | 
             Where-Object { $_.DisplayName -and $_.InstallLocation }
         foreach ($app in $software) {
             $displayName = $app.DisplayName
             $installPath = $app.InstallLocation.TrimEnd('\')
-            Write-Color "    [+] Non default installed software $displayName"  Cyan
+            $version = $app.DisplayVersion
+            Write-Color "    [+] Non default installed software $displayName (Version: $version)"  Cyan
             try {
                 if (-Not (Test-Path -Path $installPath -ErrorAction Stop)) {
                     continue
@@ -445,7 +446,7 @@ function Check_Passwords {
     Write-Color "    [+] Looking for autologon"  Yellow
     $autoLogon = Get-Item "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -ErrorAction SilentlyContinue
     if ($autoLogon) {
-        $autoLogonProps = $autoLogon.GetValueNames() | Where-Object { $_ -match 'pass' -and -not $_ -match 'PasswordExpiryWarning' }
+        $autoLogonProps = $autoLogon.GetValueNames() | Where-Object {($_ -imatch 'pass') -and (-not ($_ -match 'PasswordExpiryWarning'))}
         Write-Color "        [!] Autologon configuration found!"  Red
         if ($autoLogonProps) {
             
@@ -489,6 +490,36 @@ function Check_Passwords {
             Write-Color "        Name  : $name"  Cyan
             Write-Color "        Value : $value"  Cyan
         }
+    }
+    Write-Color "    [+] Looking for Dpapi Secrets"  Yellow
+    $paths = @("$env:APPDATA\Microsoft\Credentials", "$env:LOCALAPPDATA\Microsoft\Credentials", "$env:APPDATA\Microsoft\Protect", "$env:LOCALAPPDATA\Microsoft\Vault", "$env:APPDATA\Microsoft\Windows\Recent", "$env:APPDATA\Google\Chrome\User Data\Default\Login Data", "$env:APPDATA\Mozilla\Firefox\Profiles", "$env:ProgramData\Microsoft\Wlansvc\Profiles\Interfaces")
+    $blacklistPatterns = @('CREDHIST','SYNCHIST','\.vpol$','\.vsch$','\.safe\.bin$')
+    $exploit = $false
+    foreach ($path in $paths) {
+        if (Test-Path $path) {
+            Get-ChildItem -Path $path -Recurse -File -Force -ErrorAction SilentlyContinue | ForEach-Object {
+                $filename = $_.FullName
+                if ($blacklistPatterns | Where-Object { $filename -match $_ }) {return}
+                try {
+                    $stream = [System.IO.File]::Open($_.FullName, 'Open', 'Read', 'ReadWrite')
+                    $buffer = New-Object byte[] 4
+                    $bytesRead = $stream.Read($buffer, 0, 4)
+                    $stream.Close()
+                    if (
+                        $bytesRead -eq 4 -and
+                        ($buffer[0] -eq 1 -or $buffer[0] -eq 2) -and $buffer[1] -eq 0 -and $buffer[2] -eq 0 -and $buffer[3] -eq 0 -and
+                        $_.Length -gt 64
+                    ) {
+                        Write-Color "        [!] DPAPI file found: $($_.FullName)" Red
+                        $exploit = $true
+                    }
+                } catch {}
+            }
+        }
+    }
+    if ($exploit){
+        Write-Color "        [!] Use impacket-dpapi to dump. You'll need the master key is there anything in \Microsoft\Protect\ ?" Cyan
+        Write-Color "        [!] https://www.thehacker.recipes/ad/movement/credentials/dumping/dpapi-protected-secrets" Cyan
     }
 }
 
@@ -599,7 +630,7 @@ function Check_Me {
         Write-Color "    [+]You may be able to escalate privileges by installing an MSI as SYSTEM."  Red
     } 
     $SafeGroups = @('S-1-5-32-554', 'S-1-5-2', 'S-1-16-8448', 'S-1-1-0', 'S-1-5-32-545', 'S-1-5-4', 'S-1-2-1', 'S-1-5-11', 'S-1-5-15', 'S-1-5-113', 'S-1-2-0', 'S-1-5-64-10', 'S-1-16-8192', 'S-1-16-12288', 'S-1-5-32-555', 'S-1-5-14', 'S-1-5-32-580')
-    $SafePrivileges = @('SeChangeNotifyPrivilege','SeTimeZonePrivilege','SeShutdownPrivilege','SeUndockPrivilege','SeIncreaseWorkingSetPrivilege')
+    $SafePrivileges = @('SeMachineAccountPrivilege', 'SeChangeNotifyPrivilege','SeTimeZonePrivilege','SeShutdownPrivilege','SeUndockPrivilege','SeIncreaseWorkingSetPrivilege')
     $groups = whoami /groups | ForEach-Object {
         if ($_ -match '^\s*(.+?)\s+(S-[\d\-]+)\s+.+$') {
             [PSCustomObject]@{
@@ -608,28 +639,25 @@ function Check_Me {
             }
         }
     }
-    $interestingGroups = $groups | Where-Object {
+    $interestingGroups = @($groups | Where-Object {
         $sid = $_.SID
-        $name = $_.Name
         $isSafe = $SafeGroups -contains $sid
-        $isRemote = $name -like '*\\*' -and $name -notlike 'BUILTIN\\*' -and $name -notlike 'NT AUTHORITY\\*'
-        -not $isSafe -and -not $isRemote
-    }
+        -not $isSafe
+    })
     $privileges = whoami /priv | ForEach-Object {
         if ($_ -match '^\s*(Se\w+)\s+') {
             $matches[1]
         }
     }
-    $interestingPrivs = $privileges | Where-Object {
+    $interestingPrivs = @($privileges | Where-Object {
         $SafePrivileges -notcontains $_
-    }
+    })
     if ($interestingGroups.Count -gt 0) {
         Write-Color "    [!] Interesting Groups Found:"  Red
         $interestingGroups | ForEach-Object {
             Write-Color "        [+] $_.Name [$($_.SID)]"  Cyan
         }
     }
-
     if ($interestingPrivs.Count -gt 0) {
         Write-Color "    [!] Interesting Privileges Found:"  Red
         $interestingPrivs | ForEach-Object {
@@ -859,9 +887,9 @@ Check_Path
 Check_Services
 Check_Installed
 Check_Processes
-Check_Passwords
 Check_Scheduled
 Check_Startup
 Check_Me
 Check_Files
+Check_Passwords
 Help_Me
