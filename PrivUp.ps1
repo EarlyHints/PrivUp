@@ -346,7 +346,8 @@ function Check_Processes{
             $runAsUser = "Unknown"
         }
         if ($runAsUser -imatch $currentUser) { continue }
-        if (-not (Test-Path -Path $exePath -PathType Leaf)) { continue }
+        try {if (-not (Test-Path -Path $exePath -PathType Leaf  -ErrorAction Stop)) { continue }}
+        catch {continue}
         $seenPaths[$exePath] = $true
         $integrity = Get-PathOwner $exePath
         $exeDir = Split-Path $exePath -Parent
@@ -413,21 +414,24 @@ function Check_Passwords {
         "C:\Windows\Panther",
         "C:\Windows\Panther\Unattend",
         "C:\Windows\System32\Sysprep",
-        "C:\Sysprep",
-        "C:\"
+        "C:\Sysprep"
     )
     foreach ($path in $commonUnattendPaths) {
-    if (Test-Path $path) {
-            Get-ChildItem -Path $path -Filter unattend.xml -ErrorAction SilentlyContinue -Force | ForEach-Object {
-                $fullPath = Join-Path -Path $path -ChildPath "unattend.xml"
-                Write-Color "        [!] Found unattend.xml at: $fullPath"  Red
-                try {
-                    [xml]$xml = Get-Content $fullPath -ErrorAction Stop
-                    $xml.SelectNodes("//*") | Where-Object { $_.LocalName -match 'password'} | ForEach-Object {
-                        Write-Color "        [+] Password Field: $($_.OuterXml)"  Red
+        if (Test-Path $path) {
+            Get-ChildItem -Path $path -Recurse -Include *.xml, *.log -File -Force -ErrorAction SilentlyContinue | ForEach-Object {
+                $file = $_.FullName
+                if ($file -match 'unattend\.xml$' -or $file -match 'sysprep\.xml$') {
+                    Write-Color "        [!] Found sysprep-related XML file: $file" Red
+                    try {
+                        [xml]$xml = Get-Content $file -ErrorAction Stop
+                        $xml.SelectNodes("//*") | Where-Object { $_.LocalName -match 'password' } | ForEach-Object {
+                            Write-Color "        [+] Password Field: $($_.OuterXml)" Red
+                        }
+                    } catch {
+                        Write-Color "        [!] Failed to parse XML: $file" Magenta
                     }
-                } catch {
-                    Write-Color "        [!] Failed to parse XML in: $fullPath"  Magenta
+                } elseif ($file -match '\.log$') {
+                    Write-Color "        [!] Found sysprep log file: $file" Red
                 }
             }
         }
@@ -493,7 +497,7 @@ function Check_Passwords {
     }
     Write-Color "    [+] Looking for Dpapi Secrets"  Yellow
     $paths = @("$env:APPDATA\Microsoft\Credentials", "$env:LOCALAPPDATA\Microsoft\Credentials", "$env:APPDATA\Microsoft\Protect", "$env:LOCALAPPDATA\Microsoft\Vault", "$env:APPDATA\Microsoft\Windows\Recent", "$env:APPDATA\Google\Chrome\User Data\Default\Login Data", "$env:APPDATA\Mozilla\Firefox\Profiles", "$env:ProgramData\Microsoft\Wlansvc\Profiles\Interfaces")
-    $blacklistPatterns = @('CREDHIST','SYNCHIST','\.vpol$','\.vsch$','\.safe\.bin$')
+    $blacklistPatterns = @('CREDHIST','SYNCHIST','\.vpol$','\.vsch$','\.safe\.bin$', ".customDestinations-ms")
     $exploit = $false
     foreach ($path in $paths) {
         if (Test-Path $path) {
